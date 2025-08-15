@@ -219,19 +219,17 @@ async function callAI(userText){
         user:userText,
         sessionId,
         book,
-        questionList,
-        phase,
-        question_index:qIndex,
-        current_question:lastQuestion||""
+        // 서버가 사용할 '남은 질문' 전달 (현재 인덱스부터)
+       remainingQuestions: questionList.slice(qIndex)
       })
     });
     const raw = await res.text();
 
     if(!res.ok){
       if(res.status===429 && /insufficient_quota/i.test(raw)){
-        컴프리헨션("Billing credits are depleted. Please recharge and try again.");
+        say("Billing credits are depleted. Please recharge and try again.");
       }else{
-        컴프리헨션("Connection failed. Please try again later.");
+        say("Connection failed. Please try again later.");
         showToast();
       }
       return;
@@ -260,26 +258,16 @@ async function callAI(userText){
     const tip     = data.practice_tip ? (" " + data.practice_tip) : "";
     lastQuestion  = data.next_question || lastQuestion;
 
-    컴프리헨션(botText + tip);
+    say(botText + tip);
     history.push({ role:'assistant', content: botText + tip });
-
-    // ✅ 가이드 질문 진행: 답변 후 다음 질문으로
-    if(phase==='guided'){
-      qIndex++;
-      if(qIndex < questionList.length){
-        setTimeout(askNextQuestion, 600);
-      }else{
-        phase='free';
-        setTimeout(()=>{
-          const freeKickOff = "Great work. We've finished the question list. Now let's discuss freely. What part surprised you the most?";
-          lastQuestion = "What part surprised you the most?";
-          addLog('assistant', freeKickOff); speak(freeKickOff);
-        }, 600);
-      }
-    }
+    if (phase === 'guided' && qIndex < questionList.length) {
+      qIndex++;                               // 다음 질문으로 진행
+    if (qIndex >= questionList.length) {
+      phase = 'free';   
+  
   }catch(e){
     console.error(e);
-    컴프리헨션("Connection failed. Please try again later.");
+    say("Connection failed. Please try again later.");
     showToast();
   }finally{
     inFlight = false;
@@ -400,7 +388,7 @@ startBtn.onclick=()=>{
   const greeting="Hello! You have five minutes. I will give short feedback and follow-up questions. Let's begin!";
   history.push({role:'assistant',content:greeting});
   say(greeting);
-  if(phase==='guided'){ setTimeout(askNextQuestion, 800); }  // 첫 질문
+ // if(phase==='guided'){ setTimeout(askNextQuestion, 800); }  // 첫 질문
 };
 
 repeatBtn.onclick=()=>{ if(lastQuestion){ say("I will repeat: "+lastQuestion); } };
