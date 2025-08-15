@@ -1,14 +1,14 @@
 // netlify/functions/chat.js
-export async function handler(event, context) {
+module.exports.handler = async (event, context) => {
   if (event.httpMethod !== "POST") {
-    return { statusCode: 405, body: JSON.stringify({ error: "Method not allowed" }) };
+    return { statusCode: 405, body: JSON.stringify({ error: "Method not allowed" }) }
   }
   try {
     const body = JSON.parse(event.body || "{}");
     const { history = [], user = "", sessionId = "session", endSession = false } = body;
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return { statusCode: 500, body: JSON.stringify({ error: "Missing OPENAI_API_KEY" }) };
+      return { statusCode: 500, body: JSON.stringify({ error: "Missing OPENAI_API_KEY" }) }
     }
 
     const systemPrompt = [
@@ -27,7 +27,7 @@ const resp = await fetch("https://api.openai.com/v1/chat/completions", { ... });
 if (!resp.ok) {
   const text = await resp.text();
   console.error("OpenAI error", resp.status, text); // Netlify 함수 로그용
-  return { statusCode: resp.status, body: text };    // ★ 원래 상태코드/본문 그대로 반환
+  return { statusCode: resp.status, body: text }    // ★ 원래 상태코드/본문 그대로 반환
 }
 
     const data = await resp.json();
@@ -56,11 +56,11 @@ if (!resp.ok) {
     if (sumResp.ok) {
       const sumData = await sumResp.json();
       const sumText = sumData.choices?.[0]?.message?.content?.trim() || "{}";
-      try { session_summary = JSON.parse(sumText); } catch { session_summary = { note: sumText }; }
+      try { session_summary = JSON.parse(sumText); } catch { session_summary = { note: sumText } }
     }
 
-    return { statusCode: 200, body: JSON.stringify({ bot_text: withoutQ || raw, next_question: question, practice_tip: practiceTip, session_summary }) };
+    return { statusCode: 200, body: JSON.stringify({ bot_text: withoutQ || raw, next_question: question, practice_tip: practiceTip, session_summary }) }
   } catch (e) {
-    return { statusCode: 500, body: JSON.stringify({ error: String(e) }) };
+    return { statusCode: 500, body: JSON.stringify({ error: String(e) }) }
   }
-}
+};
