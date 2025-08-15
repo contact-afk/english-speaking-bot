@@ -1,20 +1,13 @@
 // netlify/functions/chat.js
 module.exports.handler = async (event) => {
   if (event.httpMethod === "GET") {
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-        ok: true,
-        node: process.version,
-        hasKey: !!process.env.OPENAI_API_KEY,
-      }),
-    };
+    return { statusCode: 200, body: JSON.stringify({
+      ok: true, node: process.version, hasKey: !!process.env.OPENAI_API_KEY,
+    })};
   }
-
   if (event.httpMethod !== "POST") {
     return { statusCode: 405, body: JSON.stringify({ error: "Method not allowed" }) };
   }
-
   if (!process.env.OPENAI_API_KEY) {
     return { statusCode: 500, body: JSON.stringify({ error: "Missing OPENAI_API_KEY" }) };
   }
@@ -25,10 +18,7 @@ module.exports.handler = async (event) => {
     for (let i = 1; i <= tries; i++) {
       const resp = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify(payload),
       });
       if (resp.ok) return resp;
@@ -40,82 +30,66 @@ module.exports.handler = async (event) => {
   try {
     const body = JSON.parse(event.body || "{}");
     const {
-      history = [],         // [{role:'user'|'assistant', content:'...'}]
-      user = "",            // 현재 턴의 학생 발화
-      sessionId = "",
-      endSession = false,
-      book = {},            // { title, summary, chapter, characters, vocab, ... }
-      questionList = [],    // ["Q1", "Q2", ...]
+      history = [], user = "", sessionId = "",
+      book = {},                      // {title, summary, ...} (선택)
+      remainingQuestions = [],        // 클라에서 남은 질문만 넘김(없어도 OK)
     } = body;
 
-    // --- 시스템 프롬프트(책/질문리스트 반영) ---
+    const nextPlanned = Array.isArray(remainingQuestions) && remainingQuestions.length
+      ? String(remainingQuestions[0])
+      : "";
+
     const bookText = [
-      book?.title ? `Title: ${book.title}` : "",
-      book?.summary ? `Summary: ${book.summary}` : "",
-      book?.chapter ? `Chapter: ${book.chapter}` : "",
-      book?.characters ? `Characters: ${book.characters}` : "",
-      book?.vocab ? `Key vocabulary: ${book.vocab}` : "",
+      book?.title ? `Book title: ${book.title}` : "",
+      book?.summary ? `Book summary: ${book.summary}` : "",
     ].filter(Boolean).join("\n");
 
-    const listText = questionList?.length
-      ? `Preferred question list (use in order when relevant, but adapt to student's replies):\n- ${questionList.join("\n- ")}`
-      : "If no list is given, generate suitable comprehension/speaking questions based on the book info.";
-
+    // 시스템 프롬프트: JSON만, 질문은 매 턴 1개
     const systemPrompt = [
       "You are a supportive English speaking tutor for young learners.",
-      "Speak only English. Keep replies short (under ~12 seconds when spoken).",
-      "Each turn:",
-      "1) Acknowledge or briefly react to the student's message (1 short sentence).",
-      "2) Ask exactly ONE clear follow-up question related to the book or the student's idea.",
-      "3) Optionally give 1 short practice tip (grammar/connector/phrase).",
-      "If the student goes off the script, adapt and bring them back gently.",
-      "Return ONLY valid JSON with keys: bot_text, next_question, practice_tip (optional). No prose outside JSON.",
+      "Speak only English. Keep each reply short (≈1–2 sentences).",
+      "Every turn:",
+      "1) Briefly react to the student's message (one short sentence).",
+      "2) Ask exactly ONE clear follow-up question.",
+      "3) Optionally add ONE short practice tip (grammar/connector/phrase).",
       "",
       bookText,
-      listText
+      nextPlanned
+        ? `Use THIS exact question now: "${nextPlanned}". If it contains a page hint like [page 4-5], remind the learner to check those pages.`
+        : "No fixed question list now. Continue a free discussion based on the book and the student's ideas.",
+      "",
+      "Return ONLY a valid JSON object with keys:",
+      "- bot_text: string (your short reaction + the question),",
+      "- next_question: string (repeat the single question you asked),",
+      "- practice_tip: string (optional).",
     ].join("\n");
 
-    // --- 메시지 구성: system + history + user ---
     const msgs = [
       { role: "system", content: systemPrompt },
       ...history.map(h => ({ role: h.role === "assistant" ? "assistant" : "user", content: h.content })),
       { role: "user", content: user || "(no input)" }
     ];
 
-    const payload = {
-      model: "gpt-4o-mini",
-      temperature: 0.7,
-      max_tokens: 220,
-      messages: msgs,
-    };
-
+    const payload = { model: "gpt-4o-mini", temperature: 0.6, max_tokens: 220, messages: msgs };
     const resp = await openaiChatWithRetry(payload, process.env.OPENAI_API_KEY);
     const text = await resp.text();
+    if (!resp.ok) return { statusCode: resp.status, body: text };
 
-    if (!resp.ok) {
-      // 401/404/429 등은 그대로 돌려보냄
-      return { statusCode: resp.status, body: text };
-    }
-
-    // 모델이 JSON만 내도록 했지만, 방어적으로 파싱
+    // 모델이 content에 JSON 문자열을 넣으므로 파싱
     let out;
     try {
-      const data = JSON.parse(text);
-      out = data?.choices?.[0]?.message?.content
-        ? JSON.parse(data.choices[0].message.content)
-        : data; // 혹시 바로 JSON을 냈다면
+      const j = JSON.parse(text);
+      const content = j?.choices?.[0]?.message?.content ?? "";
+      out = typeof content === "string" ? JSON.parse(content) : {};
     } catch {
-      // 마지막 방어: 텍스트를 그대로 bot_text에 넣기
-      out = { bot_text: text, next_question: "" };
+      out = {};
     }
-
-    // 최종 보정
-    if (!out || typeof out !== "object") out = { bot_text: "Let's continue.", next_question: "What do you think?" };
+    if (!out || typeof out !== "object") out = {};
     if (!out.bot_text) out.bot_text = "Let's continue.";
     if (typeof out.next_question !== "string") out.next_question = "";
 
     return { statusCode: 200, body: JSON.stringify(out) };
-  } catch (err) {
-    return { statusCode: 500, body: JSON.stringify({ error: String(err) }) };
+  } catch (e) {
+    return { statusCode: 500, body: JSON.stringify({ error: String(e) }) };
   }
 };
