@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>AI 스피킹 봇 – 5분 모드 (한글 UI / 영어 대화)</title>
+<style>
+  :root{--accent:#2563eb;--good:#10b981;--warn:#f59e0b;--danger:#ef4444;--ink:#0f172a;--muted:#6b7280}
+  *{box-sizing:border-box}
+  body{font-family:system-ui,Apple SD Gothic Neo,Malgun Gothic,Arial;margin:0;background:#fff;color:var(--ink);display:flex;min-height:100vh;align-items:center;justify-content:center}
+  .box{max-width:980px;width:100%;padding:20px}
+  h1{font-size:20px;margin:0 0 8px}
+  .muted{color:var(--muted);font-size:12px}
+  .row{display:flex;gap:8px;margin:10px 0;flex-wrap:wrap;align-items:center}
+  .btn{border:0;border-radius:10px;padding:12px 14px;font-weight:700;cursor:pointer;color:#fff;background:#111}
+  .btn.secondary{background:#e5e7eb;color:#111}
+  .select{border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px;font-size:14px}
+  .status{font-size:13px;color:#111;height:20px;margin-top:6px;display:flex;align-items:center;gap:8px}
+  .badge{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:6px 10px;font-weight:700;font-size:12px}
+  .idleB{background:#e5e7eb}.listenB{background:#dbeafe}.thinkB{background:#fef3c7}.speakB{background:#dcfce7}
+  .bubble{background:#eef3ff;padding:12px;border-radius:12px;line-height:1.45;min-height:54px;margin-top:8px}
+  .chatlayout{display:grid;grid-template-columns:280px 1fr;gap:14px;align-items:start}
+  .hud{border:1px solid #e5e7eb;border-radius:14px;padding:12px}
+  .chatlog{max-height:46vh;overflow:auto;border:1px solid #e5e7eb;border-radius:12px;padding:10px;background:#f8fafc}
+  .utter{margin:6px 0}.who{font-weight:700}.u{color:#0d9488}.b{color:#1d4ed8}
+  .panel{margin-top:12px;border:1px solid #e5e7eb;border-radius:12px;padding:10px;background:#ffffff}
+  textarea{width:100%;min-height:120px;border:1px solid #e5e7eb;border-radius:8px;padding:8px;font-family:monospace}
+  .timerWrap{display:grid;place-items:center;margin:8px 0}
+  .ring{width:160px;height:160px;border-radius:50%;background:conic-gradient(var(--accent) 0deg, #e5e7eb 0deg)}
+  .ringInner{display:grid;place-items:center;width:140px;height:140px;border-radius:50%;background:#fff;margin:10px auto}
+  .timeText{font-size:28px;font-weight:800;letter-spacing:1px}
+  .label{font-size:12px;color:var(--muted)}
+  .wave{display:flex;gap:3px;height:22px;align-items:flex-end}
+  .bar{width:4px;background:#2563eb;border-radius:2px;animation:up 1s infinite ease-in-out}
+  .bar:nth-child(2){animation-delay:0.1s}.bar:nth-child(3){animation-delay:0.2s}.bar:nth-child(4){animation-delay:0.3s}.bar:nth-child(5){animation-delay:0.4s}
+  @keyframes up{0%,100%{height:4px}50%{height:22px}}
+  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#111;color:#fff;padding:10px 14px;border-radius:10px;font-size:13px;display:none}
+  .toast.show{display:block}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>AI 스피킹 봇 – 5분 모드 (한글 UI / 영어 대화)</h1>
+  <div class="muted">대화는 영어로 진행되며, 화면 표시는 한글입니다. Safari는 <b>Samantha</b>, Chrome은 <b>Google US English</b> 음성으로 읽습니다.</div>
+
+  <div class="row">
+    <button id="start" class="btn">▶ 시작</button>
+    <button id="mic" class="btn">🎤 말하기</button>
+    <button id="repeat" class="btn secondary">⟳ 다시 듣기</button>
+    <button id="end" class="btn secondary">⏹ 종료/저장</button>
+    <label class="muted" for="voiceSel">목소리:</label>
+    <select id="voiceSel" class="select"></select>
+  </div>
+
+  <div class="chatlayout">
+    <div class="hud" aria-live="polite">
+      <div class="label">남은 시간</div>
+      <div class="timerWrap">
+        <div class="ring" id="ring"><div class="ringInner">
+          <div class="timeText" id="time">05:00</div>
+        </div></div>
+      </div>
+      <div class="label">상태</div>
+      <div class="status" id="status">
+        <span class="badge idleB" id="stateBadge">🟡 대기중</span>
+        <div class="wave" id="wave" style="display:none"><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="bubble" id="bot">준비되었습니다.</div>
+      <div class="chatlog" id="log"></div>
+      <div class="panel">
+        <div class="muted">세션 요약(자동 갱신)</div>
+        <textarea id="summary" readonly></textarea>
+        <div class="row">
+          <button id="download" class="btn secondary">⬇ 요약 다운로드</button>
+          <button id="clear" class="btn secondary">🗑 지우기</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast">연결이 되지 않습니다.</div>
+
+<script>
+const startBtn=document.getElementById('start'); const micBtn=document.getElementById('mic'); const repeatBtn=document.getElementById('repeat'); const endBtn=document.getElementById('end');
+const stateBadge=document.getElementById('stateBadge'); const waveEl=document.getElementById('wave'); const botEl=document.getElementById('bot'); const logEl=document.getElementById('log');
+const summaryEl=document.getElementById('summary'); const timeEl=document.getElementById('time'); const ringEl=document.getElementById('ring'); const voiceSel=document.getElementById('voiceSel'); const toastEl=document.getElementById('toast');
+
+let recognizing=false, rec=null, mode='IDLE', started=false; let history=[]; let lastQuestion=""; let sessionId=(Math.random().toString(36).slice(2)+Date.now().toString(36));
+
+// voices
+let selectedVoice=null;
+function isSafari(){ return /^((?!chrome|android).)*safari/i.test(navigator.userAgent); }
+function showToast(){ toastEl.classList.add('show'); setTimeout(()=>toastEl.classList.remove('show'),2000); }
+function loadVoices(){
+  const voices=speechSynthesis.getVoices();
+  voiceSel.innerHTML="";
+  voices.filter(v=>v.lang&&v.lang.startsWith('en')).forEach(v=>{ const opt=document.createElement('option'); opt.value=v.name; opt.textContent=`${v.name} (${v.lang})`; voiceSel.appendChild(opt); });
+  const preferred=isSafari()?'Samantha':'Google US English';
+  const def=voices.find(v=>v.name===preferred&&v.lang.startsWith('en'));
+  const fallback=voices.find(v=>v.lang==='en-US')||voices.find(v=>v.lang&&v.lang.startsWith('en'))||voices[0];
+  selectedVoice=def||fallback;
+  if(selectedVoice){ const idx=Array.from(voiceSel.options).findIndex(o=>o.value===selectedVoice.name); if(idx>=0) voiceSel.selectedIndex=idx; }
+}
+speechSynthesis.onvoiceschanged=loadVoices;
+voiceSel.addEventListener('change',()=>{ const voices=speechSynthesis.getVoices(); selectedVoice=voices.find(v=>v.name===voiceSel.value)||selectedVoice; });
+
+function setBadge(t){ if(t==='IDLE'){stateBadge.textContent='🟡 대기중';stateBadge.className='badge idleB';waveEl.style.display='none';} if(t==='LISTENING'){stateBadge.textContent='🎤 듣는 중';stateBadge.className='badge listenB';waveEl.style.display='flex';} if(t==='THINKING'){stateBadge.textContent='🤔 생각 중';stateBadge.className='badge thinkB';waveEl.style.display='none';} if(t==='SPEAKING'){stateBadge.textContent='🗣️ 말하는 중';stateBadge.className='badge speakB';waveEl.style.display='none';} }
+function setMode(m){ mode=m; setBadge(m); }
+
+function speak(text){ setMode('SPEAKING'); const u=new SpeechSynthesisUtterance(text); u.lang='en-US'; if(selectedVoice) u.voice=selectedVoice; u.onend=()=>setMode('IDLE'); speechSynthesis.cancel(); speechSynthesis.speak(u); }
+function say(text){ botEl.textContent=text; speak(text); addLog('assistant', text); }
+function addLog(role,text){ const d=document.createElement('div'); d.className='utter'; const w=document.createElement('span'); w.className='who '+(role==='assistant'?'b':'u'); w.textContent=role==='assistant'?'Bot: ':'You: '; const m=document.createElement('span'); m.textContent=text; d.appendChild(w); d.appendChild(m); logEl.appendChild(d); logEl.scrollTop=logEl.scrollHeight; }
+
+// 5-minute timer
+const DURATION=300; let startTs=null; let timerHandle=null;
+function secondsLeft(){ if(!startTs) return DURATION; const e=Math.floor((Date.now()-startTs)/1000); return Math.max(0,DURATION-e); }
+function fmt(s){ const m=Math.floor(s/60), ss=s%60; return `${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`; }
+function setProgress(sec){ const pct=(sec/DURATION); const deg=Math.max(0,Math.min(360,Math.floor(pct*360))); ringEl.style.background=`conic-gradient(var(--accent) ${deg}deg,#e5e7eb ${deg}deg)`; if(sec<=10) ringEl.style.background=`conic-gradient(var(--danger) ${deg}deg,#fde2e2 ${deg}deg)`; timeEl.textContent=fmt(sec); }
+function startCountdown(){ if(!startTs){ startTs=Date.now(); localStorage.setItem('hbc_timer_start',String(startTs)); } if(timerHandle) clearInterval(timerHandle); let prev=secondsLeft(); setProgress(prev); timerHandle=setInterval(()=>{ const left=secondsLeft(); setProgress(left); if(left<=0){ clearInterval(timerHandle); micBtn.disabled=true; say("Time is up. I will save your summary."); endSession(); localStorage.removeItem('hbc_timer_start'); } prev=left; },1000); }
+(function restoreTimer(){ const t=localStorage.getItem('hbc_timer_start'); if(t){ startTs=parseInt(t,10); startCountdown(); } })();
+const saved=localStorage.getItem('hbc_summary'); if(saved) summaryEl.value=saved;
+
+async function callAI(userText,endSession=false){
+  setMode('THINKING');
+  const recent=history.slice(-16);
+  try{
+    const res=await fetch('/.netlify/functions/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({history:recent,user:userText,sessionId,endSession})});
+    if(!res.ok){ showToast(); say('연결이 되지 않습니다.'); return; }
+    const data=await res.json();
+    const botText=(data.bot_text||"Okay.")+(data.practice_tip?(" "+data.practice_tip):"");
+    lastQuestion=data.next_question||data.bot_text||""; say(botText);
+    if(data.session_summary){ summaryEl.value=JSON.stringify(data.session_summary,null,2); localStorage.setItem('hbc_summary',summaryEl.value); }
+    history.push({role:'assistant',content:botText});
+  }catch(e){ showToast(); say('연결이 되지 않습니다.'); }
+}
+function endSession(){ callAI("[SYSTEM_END_SESSION]",true); stopCountdown(); }
+function stopCountdown(){ if(timerHandle) clearInterval(timerHandle); timerHandle=null; }
+
+function initASR(){ const SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR){ botEl.textContent='이 브라우저는 음성 인식을 지원하지 않아요. Chrome을 권장합니다.'; return null; } const r=new SR(); r.lang='en-US'; r.interimResults=true; r.continuous=false; r.onstart=()=>{recognizing=true; setMode('LISTENING');}; r.onresult=(e)=>{ const res=e.results[0]; if(res&&res.isFinal){ const utter=res[0].transcript; addLog('user',utter); history.push({role:'user',content:utter}); callAI(utter);} }; r.onerror=()=>{ setMode('IDLE'); showToast(); }; r.onend=()=>{recognizing=false; if(mode==='LISTENING') setMode('THINKING');}; return r; }
+
+startBtn.onclick=async()=>{ if(started){ say("이미 시작했어요. 계속 진행할게요."); return; } if(speechSynthesis.onvoiceschanged!==undefined){ speechSynthesis.getVoices(); } started=true; rec=initASR(); startCountdown(); const greeting="Hello! You have five minutes. I will give short feedback and follow-up questions. Let's begin!"; history.push({role:'assistant',content:greeting}); say(greeting); await callAI("[SYSTEM_REQUEST_OPENING_QUESTION]"); };
+micBtn.onclick=()=>{ if(mode==='SPEAKING'){ speechSynthesis.cancel(); if(rec) rec.start(); return; } if(!rec||secondsLeft()<=0){ return; } if(recognizing) rec.stop(); else rec.start(); };
+repeatBtn.onclick=()=>{ if(lastQuestion){ say("I will repeat: "+lastQuestion); } };
+endBtn.onclick=()=>{ say("Ending the session and saving your summary."); endSession(); };
+</script>
+</body>
+</html>
