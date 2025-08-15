@@ -71,7 +71,7 @@
       <div class="bubble" id="bot">준비되었습니다.</div>
       <div class="chatlog" id="log"></div>
       <div class="panel">
-        <div class="muted">세션 요약(자동 갱신)</div>
+        <div class="muted">세션 요약(사용자 클릭 시 생성)</div>
         <textarea id="summary" readonly></textarea>
         <div class="row">
           <button id="download" class="btn secondary">⬇ 요약 다운로드</button>
@@ -84,13 +84,20 @@
 <div class="toast" id="toast">연결이 되지 않습니다.</div>
 
 <script>
+/* ------- 엘리먼트 ------- */
 const startBtn=document.getElementById('start'); const micBtn=document.getElementById('mic'); const repeatBtn=document.getElementById('repeat'); const endBtn=document.getElementById('end');
 const stateBadge=document.getElementById('stateBadge'); const waveEl=document.getElementById('wave'); const botEl=document.getElementById('bot'); const logEl=document.getElementById('log');
 const summaryEl=document.getElementById('summary'); const timeEl=document.getElementById('time'); const ringEl=document.getElementById('ring'); const voiceSel=document.getElementById('voiceSel'); const toastEl=document.getElementById('toast');
+const downloadBtn=document.getElementById('download'); const clearBtn=document.getElementById('clear');
 
-let recognizing=false, rec=null, mode='IDLE', started=false; let history=[]; let lastQuestion=""; let sessionId=(Math.random().toString(36).slice(2)+Date.now().toString(36));
+/* ------- 상태 ------- */
+let recognizing=false, rec=null, mode='IDLE', started=false;
+let inFlight=false;                 // ✅ API 중복 호출 방지
+let pendingUtter="";                // ✅ 최종 발화만 모아 전송
+let history=[]; let lastQuestion="";
+let sessionId=(Math.random().toString(36).slice(2)+Date.now().toString(36));
 
-// voices
+/* ------- 보이스 ------- */
 let selectedVoice=null;
 function isSafari(){ return /^((?!chrome|android).)*safari/i.test(navigator.userAgent); }
 function showToast(){ toastEl.classList.add('show'); setTimeout(()=>toastEl.classList.remove('show'),2000); }
@@ -107,44 +114,164 @@ function loadVoices(){
 speechSynthesis.onvoiceschanged=loadVoices;
 voiceSel.addEventListener('change',()=>{ const voices=speechSynthesis.getVoices(); selectedVoice=voices.find(v=>v.name===voiceSel.value)||selectedVoice; });
 
-function setBadge(t){ if(t==='IDLE'){stateBadge.textContent='🟡 대기중';stateBadge.className='badge idleB';waveEl.style.display='none';} if(t==='LISTENING'){stateBadge.textContent='🎤 듣는 중';stateBadge.className='badge listenB';waveEl.style.display='flex';} if(t==='THINKING'){stateBadge.textContent='🤔 생각 중';stateBadge.className='badge thinkB';waveEl.style.display='none';} if(t==='SPEAKING'){stateBadge.textContent='🗣️ 말하는 중';stateBadge.className='badge speakB';waveEl.style.display='none';} }
+/* ------- 배지 ------- */
+function setBadge(t){
+  if(t==='IDLE'){stateBadge.textContent='🟡 대기중';stateBadge.className='badge idleB';waveEl.style.display='none';}
+  if(t==='LISTENING'){stateBadge.textContent='🎤 듣는 중';stateBadge.className='badge listenB';waveEl.style.display='flex';}
+  if(t==='THINKING'){stateBadge.textContent='🤔 생각 중';stateBadge.className='badge thinkB';waveEl.style.display='none';}
+  if(t==='SPEAKING'){stateBadge.textContent='🗣️ 말하는 중';stateBadge.className='badge speakB';waveEl.style.display='none';}
+}
 function setMode(m){ mode=m; setBadge(m); }
 
+/* ------- 말하기 ------- */
 function speak(text){ setMode('SPEAKING'); const u=new SpeechSynthesisUtterance(text); u.lang='en-US'; if(selectedVoice) u.voice=selectedVoice; u.onend=()=>setMode('IDLE'); speechSynthesis.cancel(); speechSynthesis.speak(u); }
 function say(text){ botEl.textContent=text; speak(text); addLog('assistant', text); }
 function addLog(role,text){ const d=document.createElement('div'); d.className='utter'; const w=document.createElement('span'); w.className='who '+(role==='assistant'?'b':'u'); w.textContent=role==='assistant'?'Bot: ':'You: '; const m=document.createElement('span'); m.textContent=text; d.appendChild(w); d.appendChild(m); logEl.appendChild(d); logEl.scrollTop=logEl.scrollHeight; }
 
-// 5-minute timer
+/* ------- 타이머 ------- */
 const DURATION=300; let startTs=null; let timerHandle=null;
 function secondsLeft(){ if(!startTs) return DURATION; const e=Math.floor((Date.now()-startTs)/1000); return Math.max(0,DURATION-e); }
 function fmt(s){ const m=Math.floor(s/60), ss=s%60; return `${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`; }
-function setProgress(sec){ const pct=(sec/DURATION); const deg=Math.max(0,Math.min(360,Math.floor(pct*360))); ringEl.style.background=`conic-gradient(var(--accent) ${deg}deg,#e5e7eb ${deg}deg)`; if(sec<=10) ringEl.style.background=`conic-gradient(var(--danger) ${deg}deg,#fde2e2 ${deg}deg)`; timeEl.textContent=fmt(sec); }
-function startCountdown(){ if(!startTs){ startTs=Date.now(); localStorage.setItem('hbc_timer_start',String(startTs)); } if(timerHandle) clearInterval(timerHandle); let prev=secondsLeft(); setProgress(prev); timerHandle=setInterval(()=>{ const left=secondsLeft(); setProgress(left); if(left<=0){ clearInterval(timerHandle); micBtn.disabled=true; say("Time is up. I will save your summary."); endSession(); localStorage.removeItem('hbc_timer_start'); } prev=left; },1000); }
+function setProgress(sec){
+  const pct=(sec/DURATION); const deg=Math.max(0,Math.min(360,Math.floor(pct*360)));
+  ringEl.style.background=`conic-gradient(var(--accent) ${deg}deg,#e5e7eb ${deg}deg)`;
+  if(sec<=10) ringEl.style.background=`conic-gradient(var(--danger) ${deg}deg,#fde2e2 ${deg}deg)`;
+  timeEl.textContent=fmt(sec);
+}
+function startCountdown(){
+  if(!startTs){ startTs=Date.now(); localStorage.setItem('hbc_timer_start',String(startTs)); }
+  if(timerHandle) clearInterval(timerHandle);
+  setProgress(secondsLeft());
+  timerHandle=setInterval(()=>{
+    const left=secondsLeft(); setProgress(left);
+    if(left<=0){ clearInterval(timerHandle); micBtn.disabled=true; say("Time is up. I will save your summary."); endSession(); localStorage.removeItem('hbc_timer_start'); }
+  },1000);
+}
 (function restoreTimer(){ const t=localStorage.getItem('hbc_timer_start'); if(t){ startTs=parseInt(t,10); startCountdown(); } })();
 const saved=localStorage.getItem('hbc_summary'); if(saved) summaryEl.value=saved;
 
+/* ------- 서버 호출 ------- */
 async function callAI(userText,endSession=false){
+  if(inFlight) return;                 // ✅ 동시 호출 금지
+  inFlight = true;
   setMode('THINKING');
   const recent=history.slice(-16);
   try{
-    const res=await fetch('/.netlify/functions/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({history:recent,user:userText,sessionId,endSession})});
+    const res=await fetch('/.netlify/functions/chat',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({history:recent,user:userText,sessionId,endSession})
+    });
     if(!res.ok){ showToast(); say('연결이 되지 않습니다.'); return; }
     const data=await res.json();
     const botText=(data.bot_text||"Okay.")+(data.practice_tip?(" "+data.practice_tip):"");
-    lastQuestion=data.next_question||data.bot_text||""; say(botText);
-    if(data.session_summary){ summaryEl.value=JSON.stringify(data.session_summary,null,2); localStorage.setItem('hbc_summary',summaryEl.value); }
+    lastQuestion=data.next_question||data.bot_text||"";
+    say(botText);
+    if(data.session_summary){
+      summaryEl.value=JSON.stringify(data.session_summary,null,2);
+      localStorage.setItem('hbc_summary',summaryEl.value);
+    }
     history.push({role:'assistant',content:botText});
-  }catch(e){ showToast(); say('연결이 되지 않습니다.'); }
+  }catch(e){
+    showToast(); say('연결이 되지 않습니다.');
+  } finally {
+    inFlight = false;
+  }
 }
 function endSession(){ callAI("[SYSTEM_END_SESSION]",true); stopCountdown(); }
 function stopCountdown(){ if(timerHandle) clearInterval(timerHandle); timerHandle=null; }
 
-function initASR(){ const SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR){ botEl.textContent='이 브라우저는 음성 인식을 지원하지 않아요. Chrome을 권장합니다.'; return null; } const r=new SR(); r.lang='en-US'; r.interimResults=true; r.continuous=false; r.onstart=()=>{recognizing=true; setMode('LISTENING');}; r.onresult=(e)=>{ const res=e.results[0]; if(res&&res.isFinal){ const utter=res[0].transcript; addLog('user',utter); history.push({role:'user',content:utter}); callAI(utter);} }; r.onerror=()=>{ setMode('IDLE'); showToast(); }; r.onend=()=>{recognizing=false; if(mode==='LISTENING') setMode('THINKING');}; return r; }
+/* ------- 음성 인식: 버튼 1회 → 말 끝나면 1회 호출 ------- */
+function initASR(){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){ botEl.textContent='이 브라우저는 음성 인식을 지원하지 않아요. Chrome을 권장합니다.'; return null; }
+  const r=new SR();
+  r.lang='en-US';
+  r.interimResults=false;      // ✅ 중간 결과 무시
+  r.continuous=false;          // ✅ 한 번 말 끝나면 onend 발생
 
-startBtn.onclick=async()=>{ if(started){ say("이미 시작했어요. 계속 진행할게요."); return; } if(speechSynthesis.onvoiceschanged!==undefined){ speechSynthesis.getVoices(); } started=true; rec=initASR(); startCountdown(); const greeting="Hello! You have five minutes. I will give short feedback and follow-up questions. Let's begin!"; history.push({role:'assistant',content:greeting}); say(greeting); await callAI("[SYSTEM_REQUEST_OPENING_QUESTION]"); };
-micBtn.onclick=()=>{ if(mode==='SPEAKING'){ speechSynthesis.cancel(); if(rec) rec.start(); return; } if(!rec||secondsLeft()<=0){ return; } if(recognizing) rec.stop(); else rec.start(); };
+  r.onstart=()=>{ recognizing=true; pendingUtter=""; setMode('LISTENING'); };
+  r.onresult=(e)=>{
+    const last=e.results[e.results.length-1];
+    if(last && last.isFinal){
+      pendingUtter += (pendingUtter?" ":"") + last[0].transcript.trim();
+    }
+  };
+  r.onerror=()=>{ setMode('IDLE'); showToast(); recognizing=false; };
+  r.onend=()=>{            // ✅ 말이 끝난 뒤에만 1회 호출
+    recognizing=false;
+    setMode('THINKING');
+    const utter = (pendingUtter||"").trim();
+    if(utter.length<2){ setMode('IDLE'); return; }
+    addLog('user',utter);
+    history.push({role:'user',content:utter});
+    callAI(utter);
+  };
+  return r;
+}
+
+/* ------- 버튼 핸들러 ------- */
+startBtn.onclick=async()=>{
+  if(started){ say("이미 시작했어요. 계속 진행할게요."); return; }
+  if(speechSynthesis.onvoiceschanged!==undefined){ speechSynthesis.getVoices(); }
+  started=true; rec=initASR(); startCountdown();
+
+  // ✅ 자동 API 호출 제거 (초기 인사만 로컬로 말하기)
+  const greeting="Hello! You have five minutes. I will give short feedback and follow-up questions. Let's begin!";
+  history.push({role:'assistant',content:greeting});
+  say(greeting);
+};
+
+micBtn.onclick=()=>{                 // 🎤 말하기 버튼 1회 → 말 끝나면 1회 호출
+  if(!rec || secondsLeft()<=0) return;
+  if(mode==='SPEAKING'){ speechSynthesis.cancel(); return; }
+  if(recognizing){ rec.stop(); } else { rec.start(); }
+};
+
 repeatBtn.onclick=()=>{ if(lastQuestion){ say("I will repeat: "+lastQuestion); } };
 endBtn.onclick=()=>{ say("Ending the session and saving your summary."); endSession(); };
+
+/* ------- 요약 다운로드(사용자 클릭 시에만) ------- */
+downloadBtn.onclick = async () => {
+  // history를 transcript 문자열로 변환
+  const transcript = history.map(h => `${h.role==='assistant'?'Bot':'You'}: ${h.content}`).join('\n');
+  if(!transcript || transcript.trim().length<10){ alert('요약할 대화 내용이 충분하지 않습니다.'); return; }
+
+  downloadBtn.disabled = true;
+  try{
+    const res = await fetch('/.netlify/functions/summarize', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ transcript, maxWords: 250, lang: 'ko' })
+    });
+    const raw = await res.text();
+    if(!res.ok){ console.error('Summarize error', res.status, raw); alert(`요약 실패(${res.status})`); return; }
+
+    // OpenAI 응답 파싱
+    let out;
+    try{ const data=JSON.parse(raw); out = data.choices?.[0]?.message?.content?.trim() || raw; }
+    catch{ out = raw; }
+
+    // 파일(.md)로 다운로드
+    const stamp = new Date().toISOString().replace(/[:.]/g,'-');
+    downloadTextFile(out, `summary-${stamp}.md`);
+  }catch(e){
+    console.error(e); alert('네트워크 오류');
+  }finally{
+    downloadBtn.disabled=false;
+  }
+};
+
+clearBtn.onclick=()=>{ summaryEl.value=""; localStorage.removeItem('hbc_summary'); };
+
+// 파일 저장 유틸
+function downloadTextFile(text, filename){
+  const blob = new Blob([text], { type:'text/markdown;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
 </script>
 </body>
 </html>
