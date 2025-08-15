@@ -1,9 +1,9 @@
-<!doctype html>   
+<!doctype html>
 <html lang="ko">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>(Book Title) Comprehension Check-up & Discuss</title>
+<title>(책 이름) 컴프리헨션 첵업 앤 디스커스</title>
 <style>
   :root{--accent:#2563eb;--good:#10b981;--warn:#f59e0b;--danger:#ef4444;--ink:#0f172a;--muted:#6b7280}
   *{box-sizing:border-box}
@@ -40,14 +40,12 @@
 </head>
 <body>
 <div class="box">
-  <h1 id="title">(책 이름) 큼프리헨션 첵업 앤 디스커스</h1>
+  <h1 id="title">(책 이름) 컴프리헨션 첵업 앤 디스커스</h1>
   <div class="muted">대화는 영어로 진행되며, 화면 표시는 한글입니다. Safari는 <b>Samantha</b>, Chrome은 <b>Google US English</b> 음성으로 읽습니다.</div>
 
   <div class="row">
     <button id="start" class="btn">▶ 시작</button>
-    <!-- 🎤 자동 인식 토글 -->
-    <button id="listen-toggle" class="btn">🟢 답변하기 시작</button>
-
+    <button id="listen-toggle" class="btn">🟢 답변하기</button>
     <button id="repeat" class="btn secondary">⟳ 다시 듣기</button>
     <button id="end" class="btn secondary">⏹ 종료</button>
     <label class="muted" for="voiceSel">목소리:</label>
@@ -67,6 +65,7 @@
         <span class="badge idleB" id="stateBadge">🟡 대기중</span>
         <div class="wave" id="wave" style="display:none"><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div></div>
       </div>
+      <div class="muted" id="turns-left"></div>
     </div>
 
     <div>
@@ -106,31 +105,33 @@ const clearBtn=document.getElementById('clear');
 
 /* ---------- 상태 ---------- */
 let recognizing=false, rec=null, mode='IDLE', started=false;
-let inFlight=false;            // API 중복 호출 방지
-let pendingUtter="";           // 한 덩어리 최종 텍스트
+let inFlight=false;
+let pendingUtter="";
 let history=[]; let lastQuestion="";
 let sessionId=(Math.random().toString(36).slice(2)+Date.now().toString(36));
 
-/* ---------- 책 정보/질문 리스트 (하드코딩: 나중에 DB 연동) ---------- */
-let book = {
-  title: "책 이름",   // ← 나중에 DB 값으로 교체
-  summary: "",
-  chapter: "",
-  characters: "",
-  vocab: ""
-};
-let questionList = []; // DB에서 불러오면 여기 넣기
+/* ---------- 책/질문 리스트 (지금은 하드코딩) ---------- */
+let book = { title: "책 이름", summary:"", chapter:"", characters:"", vocab:"" };
+document.title = `(${book.title}) 컴프리헨션 첵업 앤 디스커스`;
+titleEl.textContent = `(${book.title}) 컴프리헨션 첵업 앤 디스커스`;
 
-// 문서 제목/헤더에 반영
-document.title = `(${book.title}) 큼프리헨션 첵업 앤 디스커스`;
-titleEl.textContent = `(${book.title}) 큼프리헨션 첵업 앤 디스커스`;
+/* ✅ 여기에 선생님이 넣을 5개 질문(예시) */
+let questionList = [
+  "Who is the main character? Try to use 'because' in your answer.",
+  "Where and how do the main characters meet?",
+  "What problem does the character face inside?",
+  "Which moment felt most important to you, and why?",
+  "If you were the main character, what would you do next?"
+];
 
-/* ---------- 연결 실패 토스트 ---------- */
-function showToast(){ toastEl.classList.add('show'); setTimeout(()=>toastEl.classList.remove('show'),2000); }
+/* 진행 상태 */
+let phase   = questionList.length ? 'guided' : 'free'; // guided → free
+let qIndex  = 0;
 
 /* ---------- 보이스 ---------- */
 let selectedVoice=null;
 function isSafari(){ return /^((?!chrome|android).)*safari/i.test(navigator.userAgent); }
+function showToast(){ toastEl.classList.add('show'); setTimeout(()=>toastEl.classList.remove('show'),2000); }
 function loadVoices(){
   const voices=speechSynthesis.getVoices();
   voiceSel.innerHTML="";
@@ -149,7 +150,7 @@ function loadVoices(){
 speechSynthesis.onvoiceschanged=loadVoices;
 voiceSel.addEventListener('change',()=>{ const voices=speechSynthesis.getVoices(); selectedVoice=voices.find(v=>v.name===voiceSel.value)||selectedVoice; });
 
-/* ---------- 배지 ---------- */
+/* ---------- 배지/읽어주기 ---------- */
 function setBadge(t){
   if(t==='IDLE'){stateBadge.textContent='🟡 대기중';stateBadge.className='badge idleB';waveEl.style.display='none';}
   if(t==='LISTENING'){stateBadge.textContent='🎤 듣는 중';stateBadge.className='badge listenB';waveEl.style.display='flex';}
@@ -157,8 +158,6 @@ function setBadge(t){
   if(t==='SPEAKING'){stateBadge.textContent='🗣️ 말하는 중';stateBadge.className='badge speakB';waveEl.style.display='none';}
 }
 function setMode(m){ mode=m; setBadge(m); }
-
-/* ---------- 읽어주기 ---------- */
 function speak(text){
   setMode('SPEAKING');
   const u=new SpeechSynthesisUtterance(text);
@@ -194,7 +193,7 @@ function startCountdown(){
     const left=secondsLeft(); setProgress(left);
     if(left<=0){
       clearInterval(timerHandle);
-      say("Time is up. Session ended. Use '요약 다운로드' to save a summary.");
+      say("Time is up. Session ended. Use 'Download summary' to save a summary.");
       stopCountdown();
       localStorage.removeItem('hbc_timer_start');
       listenBtn.disabled=true;
@@ -215,21 +214,29 @@ async function callAI(userText){
     const res=await fetch('/.netlify/functions/chat',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ history:recent, user:userText, sessionId, book, questionList })
+      body:JSON.stringify({
+        history:recent,
+        user:userText,
+        sessionId,
+        book,
+        questionList,
+        phase,
+        question_index:qIndex,
+        current_question:lastQuestion||""
+      })
     });
     const raw = await res.text();
 
     if(!res.ok){
       if(res.status===429 && /insufficient_quota/i.test(raw)){
-        say("Billing credits are depleted. Please recharge and try again.");
+        컴프리헨션("Billing credits are depleted. Please recharge and try again.");
       }else{
-        say("Connection failed. Please try again later.");
+        컴프리헨션("Connection failed. Please try again later.");
         showToast();
       }
       return;
     }
 
-    // 응답 보정: {bot_text,...} 또는 completion JSON 모두 처리
     function extractBotFields(rawText){
       try{
         const j = JSON.parse(rawText);
@@ -251,23 +258,38 @@ async function callAI(userText){
     const data = extractBotFields(raw);
     const botText = data.bot_text || "";
     const tip     = data.practice_tip ? (" " + data.practice_tip) : "";
-    lastQuestion  = data.next_question || "";
+    lastQuestion  = data.next_question || lastQuestion;
 
-    say(botText + tip);
+    컴프리헨션(botText + tip);
     history.push({ role:'assistant', content: botText + tip });
+
+    // ✅ 가이드 질문 진행: 답변 후 다음 질문으로
+    if(phase==='guided'){
+      qIndex++;
+      if(qIndex < questionList.length){
+        setTimeout(askNextQuestion, 600);
+      }else{
+        phase='free';
+        setTimeout(()=>{
+          const freeKickOff = "Great work. We've finished the question list. Now let's discuss freely. What part surprised you the most?";
+          lastQuestion = "What part surprised you the most?";
+          addLog('assistant', freeKickOff); speak(freeKickOff);
+        }, 600);
+      }
+    }
   }catch(e){
     console.error(e);
-    say("Connection failed. Please try again later.");
+    컴프리헨션("Connection failed. Please try again later.");
     showToast();
   }finally{
     inFlight = false;
   }
 }
 
-/* ---------- 자동 인식 모드(토글) ---------- */
-const AUTO_SILENCE_MS = 1200;   // 침묵 시 자동 전송
-const MAX_UTTER_MS    = 12000;  // 한 덩어리 최대 시간
-const MIN_WORDS       = 3;      // 이보다 짧으면 호출 안 함
+/* ---------- 자동 인식(토글) ---------- */
+const AUTO_SILENCE_MS = 1200;   // 침묵 시 전송
+const MAX_UTTER_MS    = 12000;  // 한 덩어리 최대 길이
+const MIN_WORDS       = 3;      // 너무 짧으면 무시
 const COOLDOWN_MS     = 1200;   // 연속 호출 쿨다운
 const TURN_BUDGET     = 10;     // 세션당 응답 한도
 
@@ -276,8 +298,7 @@ let silenceTimer=null, maxTimer=null;
 let lastCallAt=0, turnsLeft=TURN_BUDGET;
 
 function showTurnsLeft(){
-  let el=document.getElementById('turns-left');
-  if(!el){ el=document.createElement('div'); el.id='turns-left'; el.className='muted'; document.querySelector('.hud').appendChild(el); }
+  const el=document.getElementById('turns-left');
   el.textContent=`남은 AI 응답: ${turnsLeft}`;
 }
 showTurnsLeft();
@@ -326,7 +347,7 @@ async function commitUtterance(){
   const words=utter.split(/\s+/).filter(Boolean);
   if(words.length<MIN_WORDS) return;
 
-  if(turnsLeft<=0){ say("AI response limit reached for this session."); return; }
+  if(turnsLeft<=0){ 컴프리헨션("AI response limit reached for this session."); return; }
   const now=Date.now();
   if(now-lastCallAt<COOLDOWN_MS) return;
   lastCallAt=now;
@@ -339,22 +360,34 @@ async function commitUtterance(){
   if(isListening && rec){ setMode('LISTENING'); armTimers(); }
 }
 
-/* ---------- 버튼: 시작/종료/다시 듣기/요약 ---------- */
+/* ---------- 가이드 질문 말하기 ---------- */
+function askNextQuestion(){
+  if(phase!=='guided') return;
+  if(qIndex>=questionList.length){ phase='free'; return; }
+  const q = questionList[qIndex];
+  const qText = (typeof q === 'string') ? q : (q?.text ?? String(q));
+  lastQuestion = qText;
+  const ask = `Question ${qIndex+1}. ${qText}`;
+  addLog('assistant', ask); speak(ask);
+}
+
+/* ---------- 버튼: 시작/다시듣기/종료/요약 ---------- */
 startBtn.onclick=()=>{
-  if(started){ say("이미 시작했어요. 계속 진행할게요."); return; }
+  if(started){ say("You’ve already started. We’ll keep going."); return; }
   if(speechSynthesis.onvoiceschanged!==undefined){ speechSynthesis.getVoices(); }
   started=true; startCountdown();
   const greeting="Hello! You have five minutes. I will give short feedback and follow-up questions. Let's begin!";
   history.push({role:'assistant',content:greeting});
   say(greeting);
+  if(phase==='guided'){ setTimeout(askNextQuestion, 800); }  // 첫 질문
 };
 
 repeatBtn.onclick=()=>{ if(lastQuestion){ say("I will repeat: "+lastQuestion); } };
-endBtn.onclick   =()=>{ say("Session ended. Click '요약 다운로드' if you want a summary."); stopCountdown(); };
+endBtn.onclick   =()=>{ say("Session ended. Click 'Download Summary' if you want a summary."); stopCountdown(); };
 
 downloadBtn.onclick = async () => {
   const transcript = history.map(h => `${h.role==='assistant'?'Bot':'You'}: ${h.content}`).join('\n');
-  if(!transcript || transcript.trim().length<10){ alert('요약할 대화 내용이 충분하지 않습니다.'); return; }
+  if(!transcript || transcript.trim().length<10){ alert('“There isn’t enough content to summarize.'); return; }
 
   downloadBtn.disabled = true;
   try{
