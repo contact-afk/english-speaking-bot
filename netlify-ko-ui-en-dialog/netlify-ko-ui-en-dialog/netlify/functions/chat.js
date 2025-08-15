@@ -22,14 +22,14 @@ export async function handler(event, context) {
 
     const messages = [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: user }];
 
-    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-      body: JSON.stringify({ model: "gpt-4o-mini", temperature: 0.7, max_tokens: 280, messages })
-    });
-    if (!resp.ok) {
-      const t = await resp.text(); return { statusCode: 500, body: JSON.stringify({ error: "OpenAI error", detail: t }) };
-    }
+const resp = await fetch("https://api.openai.com/v1/chat/completions", { ... });
+
+if (!resp.ok) {
+  const text = await resp.text();
+  console.error("OpenAI error", resp.status, text); // Netlify 함수 로그용
+  return { statusCode: resp.status, body: text };    // ★ 원래 상태코드/본문 그대로 반환
+}
+
     const data = await resp.json();
     const raw = data.choices?.[0]?.message?.content?.trim() || "Okay.";
     const sentences = raw.split(/(?<=[\.!?])\s+/);
