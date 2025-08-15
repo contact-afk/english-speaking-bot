@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>AI 스피킹 봇 – 5분 모드 (한글 UI / 영어 대화)</title>
+<title>(Book Title) Comprehension Check-up & Discuss</title>
 <style>
   :root{--accent:#2563eb;--good:#10b981;--warn:#f59e0b;--danger:#ef4444;--ink:#0f172a;--muted:#6b7280}
   *{box-sizing:border-box}
@@ -40,14 +40,13 @@
 </head>
 <body>
 <div class="box">
-  <h1>AI 스피킹 봇 – 5분 모드 (한글 UI / 영어 대화)</h1>
+  <h1 id="title">(책 이름) 큼프리헨션 첵업 앤 디스커스</h1>
   <div class="muted">대화는 영어로 진행되며, 화면 표시는 한글입니다. Safari는 <b>Samantha</b>, Chrome은 <b>Google US English</b> 음성으로 읽습니다.</div>
 
   <div class="row">
     <button id="start" class="btn">▶ 시작</button>
-    <!-- 🎤 구간 제어 -->
-    <button id="speak-start" class="btn">🟢 답변하기 시작</button>
-    <button id="speak-stop"  class="btn secondary" disabled>⛔ 답변하기 끝</button>
+    <!-- 🎤 자동 인식 토글 -->
+    <button id="listen-toggle" class="btn">🟢 답변하기 시작</button>
 
     <button id="repeat" class="btn secondary">⟳ 다시 듣기</button>
     <button id="end" class="btn secondary">⏹ 종료</button>
@@ -84,15 +83,14 @@
     </div>
   </div>
 </div>
-<div class="toast" id="toast">Connection failed.</div>
+<div class="toast" id="toast">Connection failed. Please try again later.</div>
 
 <script>
 /* ---------- 엘리먼트 ---------- */
 const startBtn=document.getElementById('start');
-const speakStartBtn=document.getElementById('speak-start');
-const speakStopBtn =document.getElementById('speak-stop');
-const repeatBtn   =document.getElementById('repeat');
-const endBtn      =document.getElementById('end');
+const listenBtn=document.getElementById('listen-toggle');
+const repeatBtn=document.getElementById('repeat');
+const endBtn=document.getElementById('end');
 const stateBadge=document.getElementById('stateBadge');
 const waveEl=document.getElementById('wave');
 const botEl=document.getElementById('bot');
@@ -102,47 +100,37 @@ const timeEl=document.getElementById('time');
 const ringEl=document.getElementById('ring');
 const voiceSel=document.getElementById('voiceSel');
 const toastEl=document.getElementById('toast');
+const titleEl=document.getElementById('title');
 const downloadBtn=document.getElementById('download');
 const clearBtn=document.getElementById('clear');
 
 /* ---------- 상태 ---------- */
 let recognizing=false, rec=null, mode='IDLE', started=false;
-let inFlight=false;           // API 중복 호출 방지
-let pendingUtter="";          // 답변 구간의 최종 텍스트
+let inFlight=false;            // API 중복 호출 방지
+let pendingUtter="";           // 한 덩어리 최종 텍스트
 let history=[]; let lastQuestion="";
 let sessionId=(Math.random().toString(36).slice(2)+Date.now().toString(36));
 
-/* ---------- 자동 종료(말 끝 버튼 안 눌러도 안전) ---------- */
-const AUTO_SILENCE_MS = 1500;  // 침묵 지속 시 자동 종료
-const MAX_TALK_MS     = 12000; // 최대 발화 시간
-let silenceTimer=null, hardStopTimer=null;
-function clearTimers(){ if(silenceTimer){clearTimeout(silenceTimer);silenceTimer=null;} if(hardStopTimer){clearTimeout(hardStopTimer);hardStopTimer=null;} }
-function armAutoStop(){
-  clearTimers();
-  silenceTimer = setTimeout(()=>{ try{ if(recognizing && rec) rec.stop(); }catch{} }, AUTO_SILENCE_MS);
-  hardStopTimer = setTimeout(()=>{ try{ if(recognizing && rec) rec.stop(); }catch{} }, MAX_TALK_MS);
-}
-
-/* ---------- 책 정보 & 질문 리스트(예시) ---------- */
-const book = {
-  title: "Because of Winn-Dixie",
-  summary: "A girl named Opal adopts a stray dog, which helps her make friends and heal.",
-  chapter: "Ch.1–3",
-  characters: "Opal, her father, Winn-Dixie",
-  vocab: "adopt, preacher, stray",
+/* ---------- 책 정보/질문 리스트 (하드코딩: 나중에 DB 연동) ---------- */
+let book = {
+  title: "책 이름",   // ← 나중에 DB 값으로 교체
+  summary: "",
+  chapter: "",
+  characters: "",
+  vocab: ""
 };
-const questionList = [
-  "Who is the main character and what is she like?",
-  "How did Opal meet Winn-Dixie?",
-  "Which moment felt most important to you, and why?",
-  "What problem is Opal facing inside?",
-  "If you were Opal, what would you do next?"
-];
+let questionList = []; // DB에서 불러오면 여기 넣기
+
+// 문서 제목/헤더에 반영
+document.title = `(${book.title}) 큼프리헨션 첵업 앤 디스커스`;
+titleEl.textContent = `(${book.title}) 큼프리헨션 첵업 앤 디스커스`;
+
+/* ---------- 연결 실패 토스트 ---------- */
+function showToast(){ toastEl.classList.add('show'); setTimeout(()=>toastEl.classList.remove('show'),2000); }
 
 /* ---------- 보이스 ---------- */
 let selectedVoice=null;
 function isSafari(){ return /^((?!chrome|android).)*safari/i.test(navigator.userAgent); }
-function showToast(){ toastEl.classList.add('show'); setTimeout(()=>toastEl.classList.remove('show'),2000); }
 function loadVoices(){
   const voices=speechSynthesis.getVoices();
   voiceSel.innerHTML="";
@@ -170,7 +158,7 @@ function setBadge(t){
 }
 function setMode(m){ mode=m; setBadge(m); }
 
-/* ---------- 말하기(읽어주기) ---------- */
+/* ---------- 읽어주기 ---------- */
 function speak(text){
   setMode('SPEAKING');
   const u=new SpeechSynthesisUtterance(text);
@@ -209,7 +197,7 @@ function startCountdown(){
       say("Time is up. Session ended. Use '요약 다운로드' to save a summary.");
       stopCountdown();
       localStorage.removeItem('hbc_timer_start');
-      speakStartBtn.disabled=true; speakStopBtn.disabled=true;
+      listenBtn.disabled=true;
     }
   },1000);
 }
@@ -241,7 +229,7 @@ async function callAI(userText){
       return;
     }
 
-    // ---- 응답 보정: {bot_text,...} 또는 completion JSON 모두 처리
+    // 응답 보정: {bot_text,...} 또는 completion JSON 모두 처리
     function extractBotFields(rawText){
       try{
         const j = JSON.parse(rawText);
@@ -276,74 +264,94 @@ async function callAI(userText){
   }
 }
 
-/* ---------- 음성 인식: ‘답변하기 시작/끝’ + 자동 종료 ---------- */
-function initASR(){
+/* ---------- 자동 인식 모드(토글) ---------- */
+const AUTO_SILENCE_MS = 1200;   // 침묵 시 자동 전송
+const MAX_UTTER_MS    = 12000;  // 한 덩어리 최대 시간
+const MIN_WORDS       = 3;      // 이보다 짧으면 호출 안 함
+const COOLDOWN_MS     = 1200;   // 연속 호출 쿨다운
+const TURN_BUDGET     = 10;     // 세션당 응답 한도
+
+let isListening=false;
+let silenceTimer=null, maxTimer=null;
+let lastCallAt=0, turnsLeft=TURN_BUDGET;
+
+function showTurnsLeft(){
+  let el=document.getElementById('turns-left');
+  if(!el){ el=document.createElement('div'); el.id='turns-left'; el.className='muted'; document.querySelector('.hud').appendChild(el); }
+  el.textContent=`남은 AI 응답: ${turnsLeft}`;
+}
+showTurnsLeft();
+
+function clearTimers(){ if(silenceTimer){clearTimeout(silenceTimer);silenceTimer=null;} if(maxTimer){clearTimeout(maxTimer);maxTimer=null;} }
+function armTimers(){ clearTimers(); silenceTimer=setTimeout(commitUtterance, AUTO_SILENCE_MS); maxTimer=setTimeout(commitUtterance, MAX_UTTER_MS); }
+
+function createRecognizer(){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR){ botEl.textContent='이 브라우저는 음성 인식을 지원하지 않아요. Chrome을 권장합니다.'; return null; }
   const r=new SR();
   r.lang='en-US';
-  r.interimResults=false;     // 중간 결과 무시
-  r.continuous=true;          // 시작~끝 구간 동안 연속 수집
+  r.interimResults=false;
+  r.continuous=true;
 
-  r.onstart=()=>{ recognizing=true; pendingUtter=""; setMode('LISTENING'); armAutoStop(); };
+  r.onstart=()=>{ recognizing=true; pendingUtter=""; setMode('LISTENING'); armTimers(); };
   r.onresult=(e)=>{
     const last=e.results[e.results.length-1];
     if(last && last.isFinal){ pendingUtter += (pendingUtter?" ":"") + last[0].transcript.trim(); }
-    armAutoStop();
+    armTimers();
   };
-  r.onerror =()=>{ recognizing=false; setMode('IDLE'); showToast(); clearTimers(); };
-  r.onend   =()=>{                // 자동/수동 종료 공통
-    recognizing=false; setMode('IDLE'); clearTimers();
-
-    // ✅ 수동 종료라면 speakStopBtn.disabled === true (onclick에서 이미 처리)
-    if (speakStopBtn.disabled) return;
-
-    // ✅ 자동 종료(침묵/최대시간) 처리
-    speakStartBtn.disabled=false;
-    speakStopBtn.disabled =true;
-
-    const utter=(pendingUtter||"").trim();
-    if(!utter || utter.split(/\s+/).length<3) return;
-    addLog('user', utter);
-    history.push({ role:'user', content: utter });
-    callAI(utter);
-  };
-
+  r.onerror =()=>{ recognizing=false; setMode('IDLE'); clearTimers(); showToast(); };
+  r.onend   =()=>{ recognizing=false; setMode('IDLE'); clearTimers(); if(isListening){ setTimeout(()=>{ try{ r.start(); }catch{} }, 200); } };
   return r;
 }
 
-/* ---------- 버튼 핸들러 ---------- */
+listenBtn.onclick = () => {
+  if(!isListening){
+    if(!rec) rec=createRecognizer();
+    if(!rec) return;
+    try{ rec.start(); }catch{}
+    isListening=true;
+    listenBtn.textContent='⏹ 인식 중지';
+  }else{
+    try{ rec.stop(); }catch{}
+    isListening=false;
+    listenBtn.textContent='🟢 답변하기 시작';
+  }
+};
+
+async function commitUtterance(){
+  clearTimers();
+  const utter=(pendingUtter||"").trim();
+  pendingUtter="";
+
+  const words=utter.split(/\s+/).filter(Boolean);
+  if(words.length<MIN_WORDS) return;
+
+  if(turnsLeft<=0){ say("AI response limit reached for this session."); return; }
+  const now=Date.now();
+  if(now-lastCallAt<COOLDOWN_MS) return;
+  lastCallAt=now;
+  turnsLeft--; showTurnsLeft();
+
+  addLog('user', utter);
+  history.push({ role:'user', content: utter });
+  await callAI(utter);
+
+  if(isListening && rec){ setMode('LISTENING'); armTimers(); }
+}
+
+/* ---------- 버튼: 시작/종료/다시 듣기/요약 ---------- */
 startBtn.onclick=()=>{
   if(started){ say("이미 시작했어요. 계속 진행할게요."); return; }
   if(speechSynthesis.onvoiceschanged!==undefined){ speechSynthesis.getVoices(); }
-  started=true; rec=initASR(); startCountdown();
+  started=true; startCountdown();
   const greeting="Hello! You have five minutes. I will give short feedback and follow-up questions. Let's begin!";
   history.push({role:'assistant',content:greeting});
   say(greeting);
 };
 
-speakStartBtn.onclick=()=>{  // 🟢 답변하기 시작
-  if(!rec || secondsLeft()<=0) return;
-  try{ rec.start(); speakStartBtn.disabled=true; speakStopBtn.disabled=false; armAutoStop(); }catch(_){}
-};
-
-speakStopBtn.onclick=()=>{   // ⛔ 답변하기 끝 (수동 종료)
-  if(!rec) return;
-  try{ rec.stop(); }catch(_){}
-  clearTimers();
-  speakStartBtn.disabled=false; speakStopBtn.disabled=true;
-
-  const utter=(pendingUtter||"").trim();
-  if(!utter || utter.split(/\s+/).length<3){ setMode('IDLE'); return; }
-  addLog('user', utter);
-  history.push({ role:'user', content: utter });
-  callAI(utter);
-};
-
 repeatBtn.onclick=()=>{ if(lastQuestion){ say("I will repeat: "+lastQuestion); } };
 endBtn.onclick   =()=>{ say("Session ended. Click '요약 다운로드' if you want a summary."); stopCountdown(); };
 
-/* ---------- 요약 다운로드(버튼 클릭 시) ---------- */
 downloadBtn.onclick = async () => {
   const transcript = history.map(h => `${h.role==='assistant'?'Bot':'You'}: ${h.content}`).join('\n');
   if(!transcript || transcript.trim().length<10){ alert('요약할 대화 내용이 충분하지 않습니다.'); return; }
