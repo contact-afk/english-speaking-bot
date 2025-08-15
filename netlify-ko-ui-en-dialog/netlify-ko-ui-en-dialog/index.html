@@ -45,9 +45,12 @@
 
   <div class="row">
     <button id="start" class="btn">▶ 시작</button>
-    <button id="mic" class="btn">🎤 말하기</button>
+    <!-- 🎤 구간 제어: 말 시작/말 끝 -->
+    <button id="speak-start" class="btn">🎤 말 시작</button>
+    <button id="speak-stop"  class="btn secondary" disabled>■ 말 끝</button>
+
     <button id="repeat" class="btn secondary">⟳ 다시 듣기</button>
-    <button id="end" class="btn secondary">⏹ 종료/저장</button>
+    <button id="end" class="btn secondary">⏹ 종료</button>
     <label class="muted" for="voiceSel">목소리:</label>
     <select id="voiceSel" class="select"></select>
   </div>
@@ -84,37 +87,71 @@
 <div class="toast" id="toast">연결이 되지 않습니다.</div>
 
 <script>
-/* ------- 엘리먼트 ------- */
-const startBtn=document.getElementById('start'); const micBtn=document.getElementById('mic'); const repeatBtn=document.getElementById('repeat'); const endBtn=document.getElementById('end');
-const stateBadge=document.getElementById('stateBadge'); const waveEl=document.getElementById('wave'); const botEl=document.getElementById('bot'); const logEl=document.getElementById('log');
-const summaryEl=document.getElementById('summary'); const timeEl=document.getElementById('time'); const ringEl=document.getElementById('ring'); const voiceSel=document.getElementById('voiceSel'); const toastEl=document.getElementById('toast');
-const downloadBtn=document.getElementById('download'); const clearBtn=document.getElementById('clear');
+/* ---------- 엘리먼트 ---------- */
+const startBtn=document.getElementById('start');
+const speakStartBtn=document.getElementById('speak-start');
+const speakStopBtn =document.getElementById('speak-stop');
+const repeatBtn   =document.getElementById('repeat');
+const endBtn      =document.getElementById('end');
+const stateBadge=document.getElementById('stateBadge');
+const waveEl=document.getElementById('wave');
+const botEl=document.getElementById('bot');
+const logEl=document.getElementById('log');
+const summaryEl=document.getElementById('summary');
+const timeEl=document.getElementById('time');
+const ringEl=document.getElementById('ring');
+const voiceSel=document.getElementById('voiceSel');
+const toastEl=document.getElementById('toast');
+const downloadBtn=document.getElementById('download');
+const clearBtn=document.getElementById('clear');
 
-/* ------- 상태 ------- */
+/* ---------- 상태 ---------- */
 let recognizing=false, rec=null, mode='IDLE', started=false;
-let inFlight=false;                 // ✅ API 중복 호출 방지
-let pendingUtter="";                // ✅ 최종 발화만 모아 전송
+let inFlight=false;           // API 중복 호출 방지
+let pendingUtter="";          // 말 시작~끝 사이 최종 텍스트 누적
 let history=[]; let lastQuestion="";
 let sessionId=(Math.random().toString(36).slice(2)+Date.now().toString(36));
 
-/* ------- 보이스 ------- */
+/* ---------- 책 정보 & 질문 리스트(예시) ---------- */
+/* 필요한 책으로 교체 가능. UI로 받아 덮어써도 됨. */
+const book = {
+  title: "Because of Winn-Dixie",
+  summary: "A girl named Opal adopts a stray dog, which helps her make friends and heal.",
+  chapter: "Ch.1–3",
+  characters: "Opal, her father, Winn-Dixie",
+  vocab: "adopt, preacher, stray",
+};
+const questionList = [
+  "Who is the main character and what is she like?",
+  "How did Opal meet Winn-Dixie?",
+  "Which moment felt most important to you, and why?",
+  "What problem is Opal facing inside?",
+  "If you were Opal, what would you do next?"
+];
+
+/* ---------- 음성합성(보이스) ---------- */
 let selectedVoice=null;
 function isSafari(){ return /^((?!chrome|android).)*safari/i.test(navigator.userAgent); }
 function showToast(){ toastEl.classList.add('show'); setTimeout(()=>toastEl.classList.remove('show'),2000); }
 function loadVoices(){
   const voices=speechSynthesis.getVoices();
   voiceSel.innerHTML="";
-  voices.filter(v=>v.lang&&v.lang.startsWith('en')).forEach(v=>{ const opt=document.createElement('option'); opt.value=v.name; opt.textContent=`${v.name} (${v.lang})`; voiceSel.appendChild(opt); });
+  voices.filter(v=>v.lang&&v.lang.startsWith('en')).forEach(v=>{
+    const opt=document.createElement('option'); opt.value=v.name; opt.textContent=`${v.name} (${v.lang})`; voiceSel.appendChild(opt);
+  });
   const preferred=isSafari()?'Samantha':'Google US English';
   const def=voices.find(v=>v.name===preferred&&v.lang.startsWith('en'));
   const fallback=voices.find(v=>v.lang==='en-US')||voices.find(v=>v.lang&&v.lang.startsWith('en'))||voices[0];
   selectedVoice=def||fallback;
-  if(selectedVoice){ const idx=Array.from(voiceSel.options).findIndex(o=>o.value===selectedVoice.name); if(idx>=0) voiceSel.selectedIndex=idx; }
+  if(selectedVoice){
+    const idx=Array.from(voiceSel.options).findIndex(o=>o.value===selectedVoice.name);
+    if(idx>=0) voiceSel.selectedIndex=idx;
+  }
 }
 speechSynthesis.onvoiceschanged=loadVoices;
 voiceSel.addEventListener('change',()=>{ const voices=speechSynthesis.getVoices(); selectedVoice=voices.find(v=>v.name===voiceSel.value)||selectedVoice; });
 
-/* ------- 배지 ------- */
+/* ---------- 배지 ---------- */
 function setBadge(t){
   if(t==='IDLE'){stateBadge.textContent='🟡 대기중';stateBadge.className='badge idleB';waveEl.style.display='none';}
   if(t==='LISTENING'){stateBadge.textContent='🎤 듣는 중';stateBadge.className='badge listenB';waveEl.style.display='flex';}
@@ -123,12 +160,25 @@ function setBadge(t){
 }
 function setMode(m){ mode=m; setBadge(m); }
 
-/* ------- 말하기 ------- */
-function speak(text){ setMode('SPEAKING'); const u=new SpeechSynthesisUtterance(text); u.lang='en-US'; if(selectedVoice) u.voice=selectedVoice; u.onend=()=>setMode('IDLE'); speechSynthesis.cancel(); speechSynthesis.speak(u); }
+/* ---------- 말하기(읽어주기) ---------- */
+function speak(text){
+  setMode('SPEAKING');
+  const u=new SpeechSynthesisUtterance(text);
+  u.lang='en-US';
+  if(selectedVoice) u.voice=selectedVoice;
+  u.onend=()=>setMode('IDLE');
+  speechSynthesis.cancel();
+  speechSynthesis.speak(u);
+}
 function say(text){ botEl.textContent=text; speak(text); addLog('assistant', text); }
-function addLog(role,text){ const d=document.createElement('div'); d.className='utter'; const w=document.createElement('span'); w.className='who '+(role==='assistant'?'b':'u'); w.textContent=role==='assistant'?'Bot: ':'You: '; const m=document.createElement('span'); m.textContent=text; d.appendChild(w); d.appendChild(m); logEl.appendChild(d); logEl.scrollTop=logEl.scrollHeight; }
+function addLog(role,text){
+  const d=document.createElement('div'); d.className='utter';
+  const w=document.createElement('span'); w.className='who '+(role==='assistant'?'b':'u'); w.textContent=role==='assistant'?'Bot: ':'You: ';
+  const m=document.createElement('span'); m.textContent=text;
+  d.appendChild(w); d.appendChild(m); logEl.appendChild(d); logEl.scrollTop=logEl.scrollHeight;
+}
 
-/* ------- 타이머 ------- */
+/* ---------- 타이머(5분) ---------- */
 const DURATION=300; let startTs=null; let timerHandle=null;
 function secondsLeft(){ if(!startTs) return DURATION; const e=Math.floor((Date.now()-startTs)/1000); return Math.max(0,DURATION-e); }
 function fmt(s){ const m=Math.floor(s/60), ss=s%60; return `${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`; }
@@ -144,96 +194,114 @@ function startCountdown(){
   setProgress(secondsLeft());
   timerHandle=setInterval(()=>{
     const left=secondsLeft(); setProgress(left);
-    if(left<=0){ clearInterval(timerHandle); micBtn.disabled=true; say("Time is up. I will save your summary."); endSession(); localStorage.removeItem('hbc_timer_start'); }
+    if(left<=0){
+      clearInterval(timerHandle);
+      say("Time is up. Session ended. Use '요약 다운로드' to save a summary.");
+      stopCountdown();                      // ✅ 자동 API 호출 없음
+      localStorage.removeItem('hbc_timer_start');
+      speakStartBtn.disabled=true; speakStopBtn.disabled=true;
+    }
   },1000);
 }
 (function restoreTimer(){ const t=localStorage.getItem('hbc_timer_start'); if(t){ startTs=parseInt(t,10); startCountdown(); } })();
 const saved=localStorage.getItem('hbc_summary'); if(saved) summaryEl.value=saved;
+function stopCountdown(){ if(timerHandle) clearInterval(timerHandle); timerHandle=null; }
 
-/* ------- 서버 호출 ------- */
-async function callAI(userText,endSession=false){
-  if(inFlight) return;                 // ✅ 동시 호출 금지
+/* ---------- 서버 호출 ---------- */
+async function callAI(userText){
+  if(inFlight) return;
   inFlight = true;
   setMode('THINKING');
-  const recent=history.slice(-16);
+  const recent=history.slice(-12); // 최근 턴만
   try{
     const res=await fetch('/.netlify/functions/chat',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({history:recent,user:userText,sessionId,endSession})
+      body:JSON.stringify({ history:recent, user:userText, sessionId, book, questionList })
     });
-    if(!res.ok){ showToast(); say('연결이 되지 않습니다.'); return; }
-    const data=await res.json();
-    const botText=(data.bot_text||"Okay.")+(data.practice_tip?(" "+data.practice_tip):"");
-    lastQuestion=data.next_question||data.bot_text||"";
-    say(botText);
-    if(data.session_summary){
-      summaryEl.value=JSON.stringify(data.session_summary,null,2);
-      localStorage.setItem('hbc_summary',summaryEl.value);
+    const raw = await res.text();
+
+    if(!res.ok){
+      // 429 등 안내
+      if(res.status===429 && /insufficient_quota/i.test(raw)){
+        say("요금제가 소진되었어요. Billing에서 크레딧 충전 후 다시 시도해 주세요.");
+      }else{
+        say("연결이 되지 않습니다.");
+      }
+      return;
     }
-    history.push({role:'assistant',content:botText});
+
+    // 서버는 {bot_text,next_question,practice_tip} 형태로 반환
+    let data;
+    try{ data = JSON.parse(raw); } catch{ data = { bot_text: raw, next_question: "" }; }
+    const botText = (data.bot_text||"");
+    const tip = data.practice_tip ? (" "+data.practice_tip) : "";
+    lastQuestion = data.next_question || "";
+
+    say(botText + tip);
+    history.push({role:'assistant',content:botText + tip});
   }catch(e){
-    showToast(); say('연결이 되지 않습니다.');
-  } finally {
+    console.error(e);
+    say("연결이 되지 않습니다.");
+  }finally{
     inFlight = false;
   }
 }
-function endSession(){ callAI("[SYSTEM_END_SESSION]",true); stopCountdown(); }
-function stopCountdown(){ if(timerHandle) clearInterval(timerHandle); timerHandle=null; }
 
-/* ------- 음성 인식: 버튼 1회 → 말 끝나면 1회 호출 ------- */
+/* ---------- 음성 인식: 말 시작/끝 버튼으로 구간 제어 ---------- */
 function initASR(){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR){ botEl.textContent='이 브라우저는 음성 인식을 지원하지 않아요. Chrome을 권장합니다.'; return null; }
   const r=new SR();
   r.lang='en-US';
-  r.interimResults=false;      // ✅ 중간 결과 무시
-  r.continuous=false;          // ✅ 한 번 말 끝나면 onend 발생
+  r.interimResults=false;     // ✅ 중간 결과 무시
+  r.continuous=true;          // ✅ 시작~끝 동안 계속 수집
 
   r.onstart=()=>{ recognizing=true; pendingUtter=""; setMode('LISTENING'); };
   r.onresult=(e)=>{
     const last=e.results[e.results.length-1];
-    if(last && last.isFinal){
-      pendingUtter += (pendingUtter?" ":"") + last[0].transcript.trim();
-    }
+    if(last && last.isFinal){ pendingUtter += (pendingUtter?" ":"") + last[0].transcript.trim(); }
   };
-  r.onerror=()=>{ setMode('IDLE'); showToast(); recognizing=false; };
-  r.onend=()=>{            // ✅ 말이 끝난 뒤에만 1회 호출
-    recognizing=false;
-    setMode('THINKING');
-    const utter = (pendingUtter||"").trim();
-    if(utter.length<2){ setMode('IDLE'); return; }
-    addLog('user',utter);
-    history.push({role:'user',content:utter});
-    callAI(utter);
-  };
+  r.onerror =()=>{ recognizing=false; setMode('IDLE'); showToast(); };
+  r.onend   =()=>{ recognizing=false; setMode('IDLE'); };
+
   return r;
 }
 
-/* ------- 버튼 핸들러 ------- */
-startBtn.onclick=async()=>{
+/* ---------- 버튼 핸들러 ---------- */
+startBtn.onclick=()=>{
   if(started){ say("이미 시작했어요. 계속 진행할게요."); return; }
   if(speechSynthesis.onvoiceschanged!==undefined){ speechSynthesis.getVoices(); }
   started=true; rec=initASR(); startCountdown();
-
-  // ✅ 자동 API 호출 제거 (초기 인사만 로컬로 말하기)
   const greeting="Hello! You have five minutes. I will give short feedback and follow-up questions. Let's begin!";
   history.push({role:'assistant',content:greeting});
   say(greeting);
 };
 
-micBtn.onclick=()=>{                 // 🎤 말하기 버튼 1회 → 말 끝나면 1회 호출
+speakStartBtn.onclick=()=>{                // 🎤 말 시작
   if(!rec || secondsLeft()<=0) return;
-  if(mode==='SPEAKING'){ speechSynthesis.cancel(); return; }
-  if(recognizing){ rec.stop(); } else { rec.start(); }
+  try{ rec.start(); speakStartBtn.disabled=true; speakStopBtn.disabled=false; }catch(_){}
+};
+
+speakStopBtn.onclick=()=>{                 // ■ 말 끝 → 1회 호출
+  if(!rec) return;
+  try{ rec.stop(); }catch(_){}
+  speakStartBtn.disabled=false; speakStopBtn.disabled=true;
+
+  const utter=(pendingUtter||"").trim();
+  if(!utter || utter.split(/\s+/).length < 3){  // 너무 짧으면 스킵
+    setMode('IDLE'); return;
+  }
+  addLog('user', utter);
+  history.push({role:'user',content:utter});
+  callAI(utter);
 };
 
 repeatBtn.onclick=()=>{ if(lastQuestion){ say("I will repeat: "+lastQuestion); } };
-endBtn.onclick=()=>{ say("Ending the session and saving your summary."); endSession(); };
+endBtn.onclick=()=>{ say("Session ended. Click '요약 다운로드' if you want a summary."); stopCountdown(); };
 
-/* ------- 요약 다운로드(사용자 클릭 시에만) ------- */
+/* ---------- 요약 다운로드(버튼 클릭 시에만) ---------- */
 downloadBtn.onclick = async () => {
-  // history를 transcript 문자열로 변환
   const transcript = history.map(h => `${h.role==='assistant'?'Bot':'You'}: ${h.content}`).join('\n');
   if(!transcript || transcript.trim().length<10){ alert('요약할 대화 내용이 충분하지 않습니다.'); return; }
 
@@ -247,12 +315,10 @@ downloadBtn.onclick = async () => {
     const raw = await res.text();
     if(!res.ok){ console.error('Summarize error', res.status, raw); alert(`요약 실패(${res.status})`); return; }
 
-    // OpenAI 응답 파싱
     let out;
     try{ const data=JSON.parse(raw); out = data.choices?.[0]?.message?.content?.trim() || raw; }
     catch{ out = raw; }
 
-    // 파일(.md)로 다운로드
     const stamp = new Date().toISOString().replace(/[:.]/g,'-');
     downloadTextFile(out, `summary-${stamp}.md`);
   }catch(e){
@@ -261,10 +327,8 @@ downloadBtn.onclick = async () => {
     downloadBtn.disabled=false;
   }
 };
-
 clearBtn.onclick=()=>{ summaryEl.value=""; localStorage.removeItem('hbc_summary'); };
 
-// 파일 저장 유틸
 function downloadTextFile(text, filename){
   const blob = new Blob([text], { type:'text/markdown;charset=utf-8' });
   const url  = URL.createObjectURL(blob);
