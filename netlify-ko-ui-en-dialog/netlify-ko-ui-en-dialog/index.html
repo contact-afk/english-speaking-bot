@@ -4,6 +4,8 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>(책 이름) 큼프리헨션 첵업 앤 디스커스</title>
+<link rel="icon" type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'%3E%3Ctext y='.9em' font-size='96'%3E%F0%9F%93%98%3C/text%3E%3C/svg%3E">
 <style>
   :root{--accent:#2563eb;--good:#10b981;--warn:#f59e0b;--danger:#ef4444;--ink:#0f172a;--muted:#6b7280}
   *{box-sizing:border-box}
@@ -85,7 +87,7 @@
 <div class="toast" id="toast">Connection failed. Please try again later.</div>
 
 <script>
-/* ---------- 엘리먼트 ---------- */
+/* ====== 엘리먼트 ====== */
 const startBtn=document.getElementById('start');
 const listenBtn=document.getElementById('listen-toggle');
 const repeatBtn=document.getElementById('repeat');
@@ -103,17 +105,19 @@ const titleEl=document.getElementById('title');
 const downloadBtn=document.getElementById('download');
 const clearBtn=document.getElementById('clear');
 
-/* ---------- 상태 ---------- */
+/* ====== 상태 ====== */
 let recognizing=false, rec=null, mode='IDLE', started=false;
 let inFlight=false;
 let pendingUtter="";
 let history=[]; let lastQuestion="";
 let sessionId=(Math.random().toString(36).slice(2)+Date.now().toString(36));
 
-/* ---------- 책/질문 리스트 (지금은 하드코딩; 이후 DB 연동) ---------- */
+/* ====== 책/질문 (하드코딩 → 나중엔 DB 연동) ====== */
 let book = { title: "책 이름", summary:"", chapter:"", characters:"", vocab:"" };
 document.title = `(${book.title}) 큼프리헨션 첵업 앤 디스커스`;
 titleEl.textContent = `(${book.title}) 큼프리헨션 첵업 앤 디스커스`;
+
+// 기본 5문항(없으면 free 모드로 시작)
 let questionList = [
   "Who is the main character? Try to use 'because' in your answer.",
   "Where and how do the main characters meet?",
@@ -121,10 +125,11 @@ let questionList = [
   "Which moment felt most important to you, and why?",
   "If you were the main character, what would you do next?"
 ];
+
 let phase = questionList.length ? 'guided' : 'free';
 let qIndex = 0;
 
-/* ---------- 보이스 ---------- */
+/* ====== 보이스 ====== */
 let selectedVoice=null;
 function isSafari(){ return /^((?!chrome|android).)*safari/i.test(navigator.userAgent); }
 function showToast(){ toastEl.classList.add('show'); setTimeout(()=>toastEl.classList.remove('show'),2000); }
@@ -167,7 +172,7 @@ async function initVoicesOnce(){
 }
 document.addEventListener('DOMContentLoaded', initVoicesOnce);
 
-/* ---------- 배지/읽어주기 ---------- */
+/* ====== 배지/읽어주기 ====== */
 function setBadge(t){
   if(t==='IDLE'){stateBadge.textContent='🟡 대기중';stateBadge.className='badge idleB';waveEl.style.display='none';}
   if(t==='LISTENING'){stateBadge.textContent='🎤 듣는 중';stateBadge.className='badge listenB';waveEl.style.display='flex';}
@@ -192,7 +197,7 @@ function addLog(role,text){
   d.appendChild(w); d.appendChild(m); logEl.appendChild(d); logEl.scrollTop=logEl.scrollHeight;
 }
 
-/* ---------- 타이머(5분) ---------- */
+/* ====== 타이머(5분) ====== */
 const DURATION=300; let startTs=null; let timerHandle=null;
 function secondsLeft(){ if(!startTs) return DURATION; const e=Math.floor((Date.now()-startTs)/1000); return Math.max(0,DURATION-e); }
 function fmt(s){ const m=Math.floor(s/60), ss=s%60; return `${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`; }
@@ -221,7 +226,7 @@ function startCountdown(){
 const saved=localStorage.getItem('hbc_summary'); if(saved) summaryEl.value=saved;
 function stopCountdown(){ if(timerHandle) clearInterval(timerHandle); timerHandle=null; }
 
-/* ---------- 서버 호출 ---------- */
+/* ====== 서버 호출 ====== */
 async function callAI(userText){
   if (inFlight) return;
   inFlight = true;
@@ -238,7 +243,8 @@ async function callAI(userText){
         user: userText,
         sessionId,
         book,
-        // 현재 인덱스부터 남은 질문 전달 → 서버가 remainingQuestions[0]을 물어요
+        // 현재 질문과 남은 질문을 함께 전달
+        current_question: lastQuestion || (questionList[qIndex] || ""),
         remainingQuestions: questionList.slice(qIndex)
       })
     });
@@ -276,19 +282,26 @@ async function callAI(userText){
     const data = extractBotFields(raw);
     const botText = data.bot_text || "";
     const tip     = data.practice_tip ? (" " + data.practice_tip) : "";
-    lastQuestion  = data.next_question || lastQuestion;
+    const nextQ   = data.next_question || "";
+    lastQuestion  = nextQ || lastQuestion;
 
-    say(botText + tip);
-    history.push({ role:'assistant', content: botText + tip });
+    // 피드백 + 다음 질문을 함께 말하기
+    const speakText = nextQ ? `${botText}${tip ? ' '+tip : ''} ${nextQ}`
+                            : `${botText}${tip ? ' '+tip : ''}`;
+    say(speakText);
+    history.push({ role:'assistant', content: speakText });
 
-    // 질문 리스트 진행(다 끝나면 free 모드)
-    if (phase === 'guided' && qIndex < questionList.length) {
+    // advance=true 일 때만 다음 질문으로 진행
+    if (data.advance && phase === 'guided' && qIndex < questionList.length) {
       qIndex++;
       if (qIndex >= questionList.length) {
         phase = 'free';
+        const kickoff = "Great job! We've finished the questions. Now let's discuss freely — what part surprised you the most?";
+        lastQuestion = "What part surprised you the most?";
+        say(kickoff);
+        history.push({ role:'assistant', content: kickoff });
       }
     }
-
   } catch (e) {
     console.error(e);
     say("Connection failed. Please try again later.");
@@ -298,7 +311,7 @@ async function callAI(userText){
   }
 }
 
-/* ---------- 자동 인식(토글) ---------- */
+/* ====== 자동 인식(토글) ====== */
 const AUTO_SILENCE_MS = 1200;   // 침묵 시 전송
 const MAX_UTTER_MS    = 12000;  // 한 덩어리 최대 길이
 const MIN_WORDS       = 3;      // 너무 짧으면 무시
@@ -377,7 +390,7 @@ async function commitUtterance(){
   if(isListening && rec){ setMode('LISTENING'); armTimers(); }
 }
 
-/* ---------- 가이드 질문(첫 질문만 로컬로 알림) ---------- */
+/* ====== 첫 질문 로컬 안내(선택) ====== */
 function askNextQuestionOnce(){
   if(phase!=='guided') return;
   if(qIndex>=questionList.length){ phase='free'; return; }
@@ -387,7 +400,7 @@ function askNextQuestionOnce(){
   addLog('assistant', ask); speak(ask);
 }
 
-/* ---------- 버튼: 시작/다시듣기/종료/요약 ---------- */
+/* ====== 버튼 ====== */
 startBtn.onclick=async ()=>{
   if(started){ say("You’ve already started. We’ll keep going."); return; }
   if(speechSynthesis.getVoices().length===0) await initVoicesOnce();
@@ -395,13 +408,12 @@ startBtn.onclick=async ()=>{
   const greeting="Hello! You have five minutes. I will give short feedback and follow-up questions. Let's begin!";
   history.push({role:'assistant',content:greeting});
   say(greeting);
-  askNextQuestionOnce(); // 첫 질문 로컬 안내
+  askNextQuestionOnce(); // 첫 질문 안내
 };
-
 repeatBtn.onclick=()=>{ if(lastQuestion){ say("I will repeat: "+lastQuestion); } };
 endBtn.onclick   =()=>{ say("Session ended. Click '요약 다운로드' if you want a summary."); stopCountdown(); };
 
-/* ---------- 요약 다운로드 ---------- */
+/* ====== 요약 다운로드(옵션) ====== */
 downloadBtn.onclick = async () => {
   const transcript = history.map(h => `${h.role==='assistant'?'Bot':'You'}: ${h.content}`).join('\n');
   if(!transcript || transcript.trim().length<10){ alert('There isn’t enough content to summarize.'); return; }
