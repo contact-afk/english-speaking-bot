@@ -293,13 +293,20 @@ const MIN_WORDS       = 3;      // 너무 짧으면 무시
 const COOLDOWN_MS     = 1200;   // 연속 호출 쿨다운
 const TURN_BUDGET     = 10;     // 세션당 응답 한도
 
+
 let isListening=false;
 let silenceTimer=null, maxTimer=null;
 let lastCallAt=0, turnsLeft=TURN_BUDGET;
 
 function showTurnsLeft(){
-  const el=document.getElementById('turns-left');
-  el.textContent=`남은 AI 응답: ${turnsLeft}`;
+  let el = document.getElementById('turns-left');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'turns-left';
+    el.className = 'muted';
+    document.querySelector('.hud').appendChild(el);
+  }
+  el.textContent = `남은 AI 응답: ${turnsLeft}`;
 }
 showTurnsLeft();
 
@@ -347,15 +354,29 @@ async function commitUtterance(){
   const words=utter.split(/\s+/).filter(Boolean);
   if(words.length<MIN_WORDS) return;
 
-  if(turnsLeft<=0){ 컴프리헨션("AI response limit reached for this session."); return; }
+  // 호출 전에
+  if (turnsLeft <= 0) {
+  say("AI response limit reached for this session.");
+  return;
+  }
   const now=Date.now();
   if(now-lastCallAt<COOLDOWN_MS) return;
   lastCallAt=now;
-  turnsLeft--; showTurnsLeft();
+  // ↓ 실제 호출 확정: 차감 + UI 갱신
+  turnsLeft--; 
+  showTurnsLeft();
 
+  try {
   addLog('user', utter);
-  history.push({ role:'user', content: utter });
+  history.push({ role: 'user', content: utter });
   await callAI(utter);
+  } catch (e) {
+  console.error(e);
+  // 실패 시 예산 복원(선택)
+  turnsLeft++;
+  showTurnsLeft();
+}
+  
 
   if(isListening && rec){ setMode('LISTENING'); armTimers(); }
 }
